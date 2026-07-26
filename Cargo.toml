@@ -1,0 +1,24 @@
+[package]
+name = "dns-authority-transition"
+version = "0.1.0"
+edition = "2021"
+authors = ["Vini20-foss"]
+license = "MIT"
+description = "Transição segura de autoridade DNS ao conectar/desconectar uma VPN gerenciada via NetworkManager, com sandboxing Landlock e proteção de imutabilidade dinâmica em /etc/resolv.conf."
+repository = "https://github.com/Vini20-foss/dns-authority-transition"
+
+# Binário mínimo: sem async runtime, sem serde, sem dependências
+# transitivas desnecessárias. Superfície de supply-chain reduzida
+# ao mínimo necessário para aplicar a sandbox Landlock e o toggle
+# de imutabilidade do inode.
+[dependencies]
+landlock = "0.4"
+libc = "0.2"
+
+[profile.release]
+opt-level = "z"     # otimiza para tamanho, não velocidade (irrelevante aqui)
+lto = true
+strip = true        # remove símbolos de debug do binário final
+panic = "abort"      # sem unwinding: qualquer pânico mata o processo
+                      # imediatamente, nunca deixa estado parcial
+codegen-units = 1
