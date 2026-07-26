@@ -15,7 +15,7 @@ Se o projeto passar a ter releases/branches com suporte formal, atualizaremos es
 ## Como reportar uma vulnerabilidade (preferências)
 
 1. Prefira abrir um GitHub Security Advisory privado no repositório: https://github.com/OWNER/REPO/security/advisories (substitua OWNER/REPO por `Vini20-foss/dns-authority-transition`).
-2. Se não puder usar a advisory do GitHub, envie um e-mail para: security@vini20-foss.dev (substitua por um e-mail válido do mantenedor) com o assunto: [SECURITY] dns-authority-transition — <breve descrição>
+2. Se não puder usar a advisory do GitHub, envie um e-mail para: vvinchnpt2@gmail.com com o assunto: [SECURITY] dns-authority-transition — <breve descrição>
 3. Se você precisa enviar detalhes sensíveis (proof-of-concept, exploit), use criptografia PGP. Adicione aqui a chave pública PGP dos mantenedores quando disponível.
 
 Por favor inclua nas comunicações:
@@ -50,9 +50,9 @@ Agradecemos contribuições responsáveis de segurança. Se desejar um reconheci
 ## Contato e PGP
 
 - GitHub Security Advisory (preferido): https://github.com/Vini20-foss/dns-authority-transition/security/advisories
-- E-mail de contato (substitua por um e-mail válido do mantenedor se desejar): security@vini20-foss.dev
+- E-mail de contato: vvinchnpt2@gmail.com
 - Chave PGP pública: (ainda não configurada) — envie uma chave pública ou peça instruções para criptografar a submissão.
 
 ---
 
-Se quiser, eu atualizo o e-mail de contato ou adiciono a chave PGP pública aqui — diga qual e-mail/PGP usar que eu aplico a mudança e commito o arquivo.
+Se quiser, eu atualizo outro detalhe (ex.: adicionar chave PGP, versão em inglês ou templates de issue) e commito — diga qual prefere.
