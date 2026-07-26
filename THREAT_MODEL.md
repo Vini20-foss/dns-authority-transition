@@ -1,114 +1,80 @@
-# Modelo de ameaças
+# Modelo de ameaça
 
-Este documento descreve os vetores de ataque considerados no design do
-`dns-authority-transition`, as defesas aplicadas para cada um, e os vetores
-que permanecem deliberadamente fora de escopo — com a justificativa de
-custo/benefício de cada decisão.
+Este documento descreve os vetores de ataque considerados no desenho deste
+projeto, o que cada camada mitiga, e os vetores que permanecem
+deliberadamente em aberto — com a justificativa de custo/benefício de cada
+decisão.
 
-## Ativo protegido
+## Premissas
 
-A integridade e a autoridade de `/etc/resolv.conf`: garantir que o arquivo
-só reflete o resolvedor DNS pretendido (o da VPN quando ela está ativa, o
-resolvedor local fora disso), e que nenhum outro processo — malicioso,
-comprometido, ou mesmo um administrador descuidado — consegue redirecionar
-silenciosamente a resolução de nomes do sistema.
+- O binário roda como root, disparado pelo dispatcher do NetworkManager
+  (que já roda como root).
+- O objetivo é impedir que um bug neste código, ou um processo malicioso
+  não relacionado à VPN, altere `/etc/resolv.conf` fora dos momentos
+  controlados de transição.
+- Não assumimos que o usuário já está comprometido por um atacante com
+  persistência de root — esse cenário está fora do escopo (ver seção
+  "Vetores fora de escopo" abaixo).
+
+## Camadas de defesa e o que cada uma mitiga
+
+| Camada | Mitiga |
+|---|---|
+| Landlock | O binário, mesmo comprometido por um bug próprio, não consegue escrever fora de `/etc` |
+| Fail-closed | Qualquer falha de validação aborta sem escrever, preservando o estado anterior |
+| Write-then-rename | Elimina qualquer janela de arquivo parcialmente escrito |
+| Imutabilidade dinâmica (chattr via ioctl) | Nenhum outro processo, nem root via shell direto, escreve em `resolv.conf` fora da janela de transição |
+| fs-verity (opcional) | Impede substituição do binário ou do wrapper por uma versão adulterada |
 
 ## Vetores considerados e mitigados
 
-### 1. Path injection / escrita fora de `/etc`
-**Ameaça:** um bug no código, ou uma entrada inesperada, faz o processo
-escrever em um caminho arbitrário do sistema.
-**Mitigação:** `RESOLV_CONF` é uma constante fixa em tempo de compilação
-(não vem de argumento nem de variável de ambiente), e o processo se
-restringe via Landlock a só poder tocar caminhos dentro de `/etc`, com o
-mínimo de permissões (`WriteFile`, `ReadFile`, `MakeReg`, `RemoveFile`)
-necessário para o padrão write-then-rename.
+1. **Substituição do binário por um processo malicioso já com root** —
+   mitigado por fs-verity, se habilitado. Sem fs-verity, este é o vetor
+   mais direto e o principal motivo de recomendarmos habilitá-lo.
+2. **Substituição do script wrapper** — mesmo tratamento que o item acima.
+   O wrapper é texto plano e, sem fs-verity, é o elo mais fácil de atacar
+   (editar 2 linhas de bash é mais simples que recompilar/substituir um
+   binário ELF).
+3. **Escrita direta em `resolv.conf` por qualquer processo fora do binário**
+   — mitigado pela imutabilidade dinâmica. Validado empiricamente: mesmo
+   `sudo bash -c 'echo ... > /etc/resolv.conf'` falha com "Operation not
+   permitted" enquanto o arquivo está no estado de repouso imutável.
+4. **Execução do binário sem privilégio suficiente** — falha
+   deterministicamente (permissão negada ao tentar escrever), sem deixar
+   estado inconsistente.
+5. **Kernel sem suporte a Landlock** — o binário recusa-se a rodar, em vez
+   de prosseguir sem a sandbox.
 
-### 2. Sobrescrita não autorizada de `resolv.conf` por outro processo
-**Ameaça:** outro processo (malware, script de terceiros, erro humano)
-sobrescreve o arquivo fora das janelas de transição legítimas.
-**Mitigação:** o atributo `FS_IMMUTABLE_FL` (equivalente a `chattr +i`)
-mantém o arquivo somente-leitura para todo o sistema, inclusive root via
-shell interativo, exceto pela janela mínima em que o próprio binário está
-executando uma transição.
+## Vetores residuais, deliberadamente não mitigados
 
-### 3. Escrita parcial / corrompida em caso de falha (crash, queda de energia)
-**Ameaça:** o processo é interrompido no meio da escrita, deixando o
-arquivo em estado inconsistente ou vazio.
-**Mitigação:** padrão write-then-rename — o conteúdo novo é escrito
-integralmente em um arquivo temporário, sincronizado a disco (`fsync`), e
-só então promovido atomicamente via `rename()`. Nunca existe um instante
-em que `/etc/resolv.conf` está parcialmente escrito.
+Estes vetores foram avaliados e a decisão foi não investir mitigação
+adicional, pela razão descrita em cada um.
 
-### 4. Reação a uma interface errada / interface de kill-switch
-**Ameaça:** o binário reage a uma interface auxiliar da VPN (kill switch,
-leak protection) em vez da interface de dados real, ou a qualquer interface
-que "pareça" ser VPN.
-**Mitigação:** `VPN_INTERFACE` é uma constante fixa, verificada com
-comparação exata de string. Não há fallback silencioso para "qualquer
-interface WireGuard" ou heurística de nome — o valor precisa ser
-descoberto e confirmado manualmente pelo operador (ver README).
+1. **Race condition na janela de mutabilidade.** Existe uma janela de
+   poucos milissegundos, durante a execução do binário, em que o arquivo
+   está gravável. Um processo que monitorasse `resolv.conf` via `inotify`
+   em tempo real poderia, em teoria, tentar escrever nesse intervalo.
+   *Por que não mitigamos*: exploração exigiria já ter root e estar
+   ativamente monitorando o sistema; o ganho para o atacante (alterar
+   temporariamente um DNS) é desproporcional ao esforço, frente a outras
+   ações que esse nível de acesso já permitiria.
 
-### 5. DNS malicioso injetado via ambiente
-**Ameaça:** `IP4_NAMESERVERS` contém um valor malformado, vazio, ou um
-endereço não roteável/não especificado (`0.0.0.0`), potencialmente
-causando negação de serviço de DNS ou comportamento indefinido.
-**Mitigação:** o valor é parseado estritamente como IPv4 e rejeitado (com
-abort fail-closed, sem escrita) se for inválido ou "unspecified".
+2. **Validação apenas sintática do valor de `IP4_NAMESERVERS`.** O binário
+   valida que o valor é um IPv4 bem formado e rejeita `0.0.0.0`, mas não
+   verifica se o IP pertence a um range conhecido do provedor de VPN.
+   *Por que não mitigamos*: exploração exigiria injetar uma variável de
+   ambiente forjada especificamente no processo `nm-dispatcher` antes dele
+   invocar o wrapper — o que, com fs-verity ativo no wrapper, já exigiria
+   comprometer o próprio NetworkManager, um alvo com superfície muito maior
+   e mais valiosa que este binário.
 
-### 6. Ausência ou queda de suporte a Landlock no kernel
-**Ameaça:** o binário roda em um kernel sem suporte a Landlock, ou o
-sandbox não é de fato aplicado (silenciosamente ignorado).
-**Mitigação:** fail-closed explícito — se `RulesetStatus::NotEnforced` for
-observado após a tentativa de restrição, o processo aborta sem executar
-nenhuma lógica de negócio, em vez de prosseguir sem proteção.
+## Vetores fora de escopo
 
-### 7. Substituição do binário ou do script wrapper por versão adulterada
-**Ameaça:** um atacante com acesso de escrita ao filesystem (mesmo que
-transitório) substitui `/usr/local/libexec/dns-authority-transition` ou o
-script dispatcher por uma versão maliciosa.
-**Mitigação (opcional, recomendada):** fs-verity torna os dois artefatos
-permanentemente somente-leitura e verificados por hash a cada leitura,
-detectando/impedindo adulteração mesmo por processos com privilégio de
-root. Trade-off: atualizar exige remover e reinstalar do zero.
-
-## Vetores deliberadamente fora de escopo
-
-### Comprometimento do NetworkManager em si
-Se o `NetworkManager-dispatcher.service` ou o próprio `NetworkManager` for
-comprometido, o atacante já tem controle suficiente sobre a rede do host
-para forjar qualquer evento de dispatcher, incluindo valores de
-`IP4_NAMESERVERS`. Este projeto confia na integridade do NetworkManager
-como pré-requisito, não como algo que reimplementa ou verifica — mitigar
-isso está fora do escopo de um binário de política de DNS.
-
-### Acesso físico / root persistente com capacidade de recompilar o kernel
-Um atacante com acesso root persistente e a capacidade de recarregar
-módulos de kernel, desabilitar LSMs no boot, ou reparticionar o disco pode
-contornar tanto o Landlock quanto a imutabilidade do inode. Nenhuma
-proteção em espaço de usuário resiste a comprometimento total do kernel;
-isso é tratado como fora do modelo de ameaças (o objetivo é elevar o custo
-do ataque, não torná-lo impossível contra um adversário com esse nível de
-acesso).
-
-### Ataques de rede contra o próprio protocolo DNS (spoofing, cache poisoning)
-Este projeto decide *qual servidor DNS* o sistema usa; ele não valida nem
-protege as respostas que esse servidor retorna. DNSSEC, DoH/DoT, e a
-segurança do resolvedor local (AdGuard Home, Pi-hole, Unbound) são
-responsabilidade de configuração do resolvedor escolhido, não deste
-binário.
-
-### IPv6
-O binário hoje trata exclusivamente `IPv4Addr`/`IP4_NAMESERVERS`. Um
-ambiente que dependa de DNS exclusivamente sobre IPv6 não está coberto —
-isso é uma limitação funcional documentada, não uma falha de segurança
-per se, mas vale registrar que um `resolv.conf` sem entrada IPv6 pode levar
-a fallback de resolução inesperado dependendo da stack de rede do host.
-
-### Múltiplos perfis de VPN / múltiplas interfaces simultâneas
-O design atual assume uma única VPN de interesse, com nome de interface
-fixo em tempo de compilação. Um cenário com múltiplas VPNs concorrentes,
-prioridades entre elas, ou detecção automática de interface não é tratado
-— contribuições generalizando isso são bem-vindas (ver README), mas
-aumentam a superfície de decisão que precisa ser auditada com cuidado
-equivalente ao já aplicado aqui.
+Um atacante que já tenha conseguido execução de código persistente como
+root no sistema (por qualquer via não relacionada a este projeto) tem à
+disposição objetivos muito mais valiosos do que adulterar temporariamente
+a resolução de DNS: leitura de qualquer arquivo, exfiltração de dados,
+instalação de outros implantes. Este projeto não pretende ser uma defesa
+contra um sistema já comprometido em nível de root — pretende ser uma
+camada de robustez contra bugs próprios e processos não privilegiados ou
+semi-privilegiados que tentem interferir na configuração de DNS.
